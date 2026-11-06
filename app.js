@@ -456,7 +456,7 @@ const TITLES = { inicio: 'Visão geral', extrato: 'Lançamentos', cartoes: 'Cart
 function header() {
   const d = new Date();
   const sub = {
-    inicio: `${DOW[d.getDay()]}, ${d.getDate()} de ${MESF[d.getMonth()]}`,
+    inicio: `${window.Cloud && Cloud.perfil ? `Olá, ${esc(Cloud.perfil.nome)} · ` : ''}${DOW[d.getDay()]}, ${d.getDate()} de ${MESF[d.getMonth()]}`,
     extrato: 'Tudo o que entrou e saiu',
     cartoes: 'Faturas, limites e vencimentos',
     agenda: 'A pagar, a receber e custos fixos',

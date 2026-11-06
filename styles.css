@@ -358,6 +358,8 @@ body.gated #app, body.gated #fab, body.gated #tabbar { visibility: hidden; }
 .gate-link { display: block; margin: 14px auto 0; }
 .gate-foot { color: var(--faint); font-size: 12px; margin-top: 18px; }
 
+.row .ico.avatar { font-family: var(--f-display); font-weight: 800; font-size: 14px; letter-spacing: .02em; background: linear-gradient(140deg, var(--garoupa), var(--garca)); border-color: rgba(255,255,255,.3); color: #fff; }
+
 /* indicador de sincronização */
 .sync-btn { position: relative; }
 .sd { position: absolute; top: 6px; right: 6px; width: 10px; height: 10px; border-radius: 50%; border: 2px solid var(--ink); background: var(--faint); }

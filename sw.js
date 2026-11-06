@@ -1,6 +1,6 @@
 // Service worker do Bolso: deixa o app abrir offline.
 // Ao mudar qualquer arquivo do app, aumente a versão abaixo para o iPhone baixar a nova.
-const VERSION = 'bolso-v2';
+const VERSION = 'bolso-v3';
 const SHELL = [
   './',
   './index.html',

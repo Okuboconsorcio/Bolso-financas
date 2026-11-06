@@ -30,6 +30,7 @@
 
   const SNAP_KEY = () => `bolso.snap.${C.user.id}`;
   const LOCK_KEY = () => `bolso.lock.${C.user.id}`;
+  const PERFIL_KEY = () => `bolso.perfil.${C.user.id}`;
   const readJSON = (k) => { try { return JSON.parse(localStorage.getItem(k)); } catch (e) { return null; } };
   const writeJSON = (k, v) => { try { localStorage.setItem(k, JSON.stringify(v)); } catch (e) { /* cheio */ } };
   const saveSnap = () => writeJSON(SNAP_KEY(), snap);
@@ -304,6 +305,87 @@
     if (C.status === 'sync') setStatus('ok');
   }
 
+  /* ---------- perfil (public.perfis: nome, sobrenome, telefone) ---------- */
+  const telDigits = (s) => String(s || '').replace(/\D/g, '');
+  function telE164(s) {
+    let d = telDigits(s);
+    if (d.startsWith('55') && d.length >= 12) d = d.slice(2);
+    return d.length === 10 || d.length === 11 ? `+55${d}` : null;
+  }
+  function telMask(v) {
+    const d = telDigits(v).slice(0, 11);
+    if (!d) return '';
+    if (d.length <= 2) return `(${d}`;
+    if (d.length <= 6) return `(${d.slice(0, 2)}) ${d.slice(2)}`;
+    if (d.length <= 10) return `(${d.slice(0, 2)}) ${d.slice(2, 6)}-${d.slice(6)}`;
+    return `(${d.slice(0, 2)}) ${d.slice(2, 7)}-${d.slice(7)}`;
+  }
+  const telFmt = (e) => telMask(String(e || '').replace(/^\+55/, ''));
+  C.telFmt = telFmt;
+  function perfilFields(p = {}) {
+    return `<div class="grid2">
+        <label class="field"><span>Nome</span><input name="nome" autocomplete="given-name" autocapitalize="words" maxlength="60" value="${esc(p.nome || '')}"></label>
+        <label class="field"><span>Sobrenome</span><input name="sobrenome" autocomplete="family-name" autocapitalize="words" maxlength="80" value="${esc(p.sobrenome || '')}"></label>
+      </div>
+      <label class="field"><span>Celular (WhatsApp)</span><input name="telefone" type="tel" inputmode="tel" autocomplete="tel-national" placeholder="(11) 91234-5678" value="${esc(telFmt(p.telefone))}"></label>`;
+  }
+  function readPerfil(f) {
+    const nome = f.nome.value.trim().replace(/\s+/g, ' ');
+    const sobrenome = f.sobrenome.value.trim().replace(/\s+/g, ' ');
+    const telefone = telE164(f.telefone.value);
+    if (!nome) return 'Preencha seu nome.';
+    if (!sobrenome) return 'Preencha seu sobrenome.';
+    if (!telefone) return 'Celular inválido: use DDD + número, ex.: (11) 91234-5678.';
+    return { nome, sobrenome, telefone };
+  }
+  function perfilGateHtml() {
+    return `${logo}<h1>Complete seu cadastro</h1><p class="gate-sub">Falta pouco: só seu nome e celular.</p>
+      <form data-form="perfil" class="glass card gate-card" novalidate>
+        ${perfilFields(C.perfil || {})}
+        <div class="gate-msg"></div>
+        <button class="btn primary block" type="submit">Salvar e continuar</button>
+      </form>`;
+  }
+  async function ensurePerfil() {
+    if (!C.user) return;
+    C.perfil = readJSON(PERFIL_KEY()) || C.perfil || null;
+    if (!navigator.onLine) return;
+    const { data, error } = await sb.schema('public').from('perfis').select('nome, sobrenome, telefone').maybeSingle();
+    if (error) return;
+    if (data) {
+      C.perfil = data;
+      C.needPerfil = false;
+      writeJSON(PERFIL_KEY(), data);
+      render();
+    } else {
+      C.needPerfil = true;
+      if (!locked && !RECOVERY) showGate(perfilGateHtml());
+    }
+  }
+  async function submitPerfil(f) {
+    const p = readPerfil(f);
+    if (typeof p === 'string') return gateMsg(f, p);
+    if (!navigator.onLine) return gateMsg(f, 'Sem internet. Conecte-se para salvar o perfil.');
+    busyBtn(f, true);
+    const { error } = await sb.schema('public').from('perfis').upsert({ user_id: C.user.id, ...p }, { onConflict: 'user_id' });
+    busyBtn(f, false);
+    if (error) return gateMsg(f, `Não foi possível salvar: ${esc(error.message)}`);
+    C.perfil = p;
+    C.needPerfil = false;
+    writeJSON(PERFIL_KEY(), p);
+    if (f.closest('#gate')) hideGate(); else closeAllSheets();
+    render();
+    toast('Perfil salvo');
+  }
+  function perfilSheet() {
+    openSheet(`<form data-form="perfil" novalidate>${sheetHead('Seu perfil')}
+      ${perfilFields(C.perfil || {})}
+      <label class="field"><span>E-mail de acesso</span><input value="${esc(C.user.email)}" disabled></label>
+      <div class="gate-msg"></div>
+      <div class="form-foot"><button class="btn primary block" type="submit">Salvar perfil</button></div>
+    </form>`);
+  }
+
   /* ---------- sessão ---------- */
   async function startUser(user, { fromLogin = false } = {}) {
     if (starting || (C.user && C.user.id === user.id && snap)) return;
@@ -312,6 +394,7 @@
       C.user = user;
       KEY = `bolso.u.${user.id}`;
       snap = readJSON(SNAP_KEY());
+      C.perfil = readJSON(PERFIL_KEY());
       S = load();
       if (RECOVERY) showGate(newPassHtml());
       else if (!fromLogin && lockCfg().credId) lock();
@@ -319,6 +402,7 @@
       render();
       if (snap) await syncNow();
       else await firstSync();
+      await ensurePerfil();
     } finally {
       starting = false;
     }
@@ -329,8 +413,9 @@
       localStorage.removeItem(KEY);
       localStorage.removeItem(SNAP_KEY());
       localStorage.removeItem(LOCK_KEY());
+      localStorage.removeItem(PERFIL_KEY());
     }
-    C.user = null; snap = null; locked = false;
+    C.user = null; C.perfil = null; C.needPerfil = false; snap = null; locked = false;
     KEY = LEGACY_KEY;
     S = fresh();
     closeAllSheets();
@@ -375,6 +460,7 @@
         <div class="seg"><label><input type="radio" name="mode" value="entrar" checked><span>Entrar</span></label><label><input type="radio" name="mode" value="criar"><span>Criar conta</span></label></div>
         <label class="field"><span>E-mail</span><input name="email" type="email" inputmode="email" autocomplete="username" autocapitalize="off" spellcheck="false" required></label>
         <label class="field"><span>Senha</span><input name="senha" type="password" autocomplete="current-password" minlength="8" required></label>
+        <div class="signup-only" hidden>${perfilFields()}</div>
         <div class="gate-msg">${msg ? notice('info', msg) : ''}</div>
         <button class="btn primary block" type="submit">Entrar</button>
         <button type="button" class="link gate-link" data-act="forgot">Esqueci minha senha</button>
@@ -430,6 +516,8 @@
     const password = f.senha.value;
     if (!email || !password) return gateMsg(f, 'Preencha e-mail e senha.');
     if (mode === 'criar' && password.length < 8) return gateMsg(f, 'Use uma senha com pelo menos 8 caracteres.');
+    const perfil = mode === 'criar' ? readPerfil(f) : null;
+    if (typeof perfil === 'string') return gateMsg(f, perfil);
     gateMsg(f, '');
     busyBtn(f, true);
     try {
@@ -438,7 +526,7 @@
         if (error) return gateMsg(f, authMsg(error));
         await startUser(data.user, { fromLogin: true });
       } else {
-        const { data, error } = await sb.auth.signUp({ email, password, options: { emailRedirectTo: location.origin + location.pathname } });
+        const { data, error } = await sb.auth.signUp({ email, password, options: { emailRedirectTo: location.origin + location.pathname, data: perfil } });
         if (error) return gateMsg(f, authMsg(error));
         if (data.session) await startUser(data.user, { fromLogin: true });
         else gateMsg(f, `Conta criada! Enviamos um link de confirmação para <b>${esc(email)}</b>. Abra o link e depois entre aqui com a sua senha.`, 'info');
@@ -489,7 +577,8 @@
   }
   function unlock() {
     locked = false;
-    hideGate();
+    if (C.needPerfil) showGate(perfilGateHtml());
+    else hideGate();
     render();
   }
   async function faceUnlock(auto) {
@@ -542,8 +631,12 @@
   C.syncButton = () => `<button class="icon-btn sync-btn" data-act="syncNow" aria-label="${ST[C.status] || 'Sincronizar'}">${ic('cloud')}<span class="sd ${C.status}"></span></button>`;
   C.maisSection = () => {
     const face = !!lockCfg().credId;
+    const p = C.perfil;
+    const nome = p ? `${p.nome} ${p.sobrenome}` : 'Complete seu perfil';
+    const ini = p ? (p.nome[0] + p.sobrenome[0]).toUpperCase() : '?';
     return `<div class="section-title" style="margin-top:6px"><h2>Sua conta</h2></div><div class="glass list menu">
-      <button class="row" data-act="syncNow"><span class="ico">${ic('cloud')}</span><span class="main"><b>${esc(C.user.email)}</b><small data-sync-text>${ST[C.status] || 'Conectado'}</small></span><span class="chev">${ic('repeat')}</span></button>
+      <button class="row" data-act="editPerfil"><span class="ico avatar">${esc(ini)}</span><span class="main"><b>${esc(nome)}</b><small>${esc(C.user.email)}${p ? ` · ${esc(telFmt(p.telefone))}` : ''}</small></span><span class="chev">${ic('chevR')}</span></button>
+      <button class="row" data-act="syncNow"><span class="ico">${ic('cloud')}</span><span class="main"><b>Sincronização</b><small data-sync-text>${ST[C.status] || 'Conectado'}</small></span><span class="chev">${ic('repeat')}</span></button>
       <label class="row" style="cursor:pointer"><span class="ico">${ic('faceid')}</span><span class="main"><b>Bloquear com Face ID</b><small>${C.faceOK || face ? 'Pede Face ID ao abrir e depois de 1 min fora do app' : 'Indisponível neste aparelho ou navegador'}</small></span><span class="switch" style="border:0;background:none;padding:0;margin:0"><input type="checkbox" data-toggle="faceid" ${face ? 'checked' : ''} ${C.faceOK || face ? '' : 'disabled'} aria-label="Bloquear com Face ID"></span></label>
       <button class="row" data-act="logout"><span class="ico">${ic('logout')}</span><span class="main"><b>Sair da conta</b><small>Os dados continuam salvos na nuvem</small></span></button>
     </div>`;
@@ -559,11 +652,16 @@
       else if (C.status === 'erro') toast(`Erro ao sincronizar: ${C.error}`);
     },
     logout: () => logout(),
+    editPerfil: () => perfilSheet(),
     faceUnlock: () => faceUnlock(false),
     passUnlock: () => { const f = gateEl().querySelector('form[data-form=unlockpass]'); if (f) { f.hidden = false; f.senha.focus(); } },
     forgot: (el) => forgot(el)
   });
-  Object.assign(FORMS, { login: submitLogin, newpass: submitNewPass, unlockpass: submitUnlockPass });
+  Object.assign(FORMS, { login: submitLogin, newpass: submitNewPass, unlockpass: submitUnlockPass, perfil: submitPerfil });
+
+  document.addEventListener('input', (e) => {
+    if (e.target.name === 'telefone' && e.target.form && /^(login|perfil)$/.test(e.target.form.dataset.form)) e.target.value = telMask(e.target.value);
+  });
 
   document.addEventListener('change', (e) => {
     const t = e.target;
@@ -573,6 +671,7 @@
       t.form.querySelector('button[type=submit]').textContent = criar ? 'Criar conta' : 'Entrar';
       t.form.senha.setAttribute('autocomplete', criar ? 'new-password' : 'current-password');
       t.form.querySelector('[data-act=forgot]').hidden = criar;
+      t.form.querySelector('.signup-only').hidden = !criar;
       gateMsg(t.form, criar ? 'Use o e-mail autorizado e uma senha com pelo menos 8 caracteres.' : '', 'info');
     }
   });
