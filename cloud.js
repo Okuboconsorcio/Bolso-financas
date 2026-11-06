@@ -24,7 +24,17 @@
     auth: { persistSession: true, autoRefreshToken: true, detectSessionInUrl: true, storageKey: 'bolso.auth' }
   });
 
-  const C = (window.Cloud = { user: null, status: 'off', error: '', faceOK: false });
+  // Chave pública das notificações (gerada pela função "avisos"; pública por natureza)
+  const VAPID_PUBLIC = 'BM0VANbiDdugfLjzEbbtfNqIQcAeLtHtodOY9HNPEu_9U4xDfz0nGKcL1Rm7dYWNA2P2IOc8bOCmRSiUBDL40wM';
+
+  // notificação tocada → abre direto na Agenda
+  if (new URLSearchParams(location.search).get('abrir') === 'agenda') {
+    ui.tab = 'agenda';
+    ui.agenda = 'pagar';
+    history.replaceState(null, '', location.pathname + location.hash);
+  }
+
+  const C = (window.Cloud = { user: null, status: 'off', error: '', faceOK: false, push: { supported: false, on: false, perm: 'default', dias: 1, valor: true } });
   let snap = null; // último estado confirmado na nuvem: { tabela: { id: json }, pref: json }
   let busy = false, dirty = false, timer = null, starting = false, locked = false, hiddenAt = 0;
 
@@ -386,6 +396,115 @@
     </form>`);
   }
 
+  /* ---------- avisos de vencimento (Web Push) ---------- */
+  const pushSupported = () => 'serviceWorker' in navigator && 'PushManager' in window && 'Notification' in window;
+  async function getSub() {
+    const reg = await navigator.serviceWorker.getRegistration();
+    return reg ? reg.pushManager.getSubscription() : null;
+  }
+  function deviceName() {
+    const ua = navigator.userAgent;
+    if (/iPhone/.test(ua)) return 'iPhone';
+    if (/iPad/.test(ua) || (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1)) return 'iPad';
+    if (/Android/.test(ua)) return 'Android';
+    if (/Mac/.test(ua)) return 'Mac';
+    if (/Windows/.test(ua)) return 'Windows';
+    return 'Navegador';
+  }
+  async function saveSub(sub) {
+    const j = sub.toJSON();
+    const { error } = await sb.from('push_inscricoes').upsert(
+      { user_id: C.user.id, endpoint: j.endpoint, p256dh: j.keys.p256dh, auth: j.keys.auth, dispositivo: deviceName() },
+      { onConflict: 'user_id,endpoint' }
+    );
+    if (error) throw error;
+  }
+  async function refreshPush() {
+    const P = C.push;
+    P.supported = pushSupported();
+    if (!C.user || !navigator.onLine) return;
+    try {
+      const { data } = await sb.from('preferencias').select('aviso_dias, aviso_mostrar_valor').maybeSingle();
+      if (data) { P.dias = data.aviso_dias; P.valor = data.aviso_mostrar_valor; }
+    } catch (e) { /* segue com o padrão */ }
+    if (!P.supported) return;
+    P.perm = Notification.permission;
+    try {
+      const sub = await getSub();
+      P.on = !!sub && P.perm === 'granted';
+      if (P.on) await saveSub(sub); // mantém a inscrição atualizada no servidor
+    } catch (e) { console.warn('[Bolso] avisos:', e); }
+  }
+  function setPush(input) {
+    if (!input.checked) return disablePush();
+    if (!C.push.supported) {
+      input.checked = false;
+      return toast(isIOS() && !isStandalone() ? 'Instale o app na tela de início (Compartilhar → Adicionar à Tela de Início) para receber avisos' : 'Este navegador não recebe notificações');
+    }
+    // pedido de permissão direto no toque (o iPhone exige)
+    Notification.requestPermission().then(async (perm) => {
+      C.push.perm = perm;
+      if (perm !== 'granted') {
+        toast(perm === 'denied' ? 'Notificações bloqueadas. Libere em Ajustes do iPhone → Notificações → Bolso' : 'Permissão não concedida');
+        return render();
+      }
+      try {
+        const reg = await navigator.serviceWorker.ready;
+        let sub = await reg.pushManager.getSubscription();
+        if (!sub) sub = await reg.pushManager.subscribe({ userVisibleOnly: true, applicationServerKey: b64d(VAPID_PUBLIC) });
+        await saveSub(sub);
+        C.push.on = true;
+        render();
+        toast('Avisos ligados: vou mandar um de teste');
+        sendTest(true);
+      } catch (e) {
+        console.warn('[Bolso] avisos:', e);
+        C.push.on = false;
+        render();
+        toast(`Não foi possível ligar os avisos: ${e.message || e}`);
+      }
+    });
+  }
+  async function disablePush(silent) {
+    try {
+      const sub = await getSub();
+      if (sub) {
+        if (C.user) await sb.from('push_inscricoes').delete().eq('endpoint', sub.endpoint);
+        await sub.unsubscribe();
+      }
+    } catch (e) { console.warn('[Bolso] avisos:', e); }
+    C.push.on = false;
+    if (!silent) { render(); toast('Avisos desligados neste aparelho'); }
+  }
+  async function sendTest(silent) {
+    const { data, error } = await sb.functions.invoke('avisos', { body: { acao: 'testar' } });
+    if (silent) return;
+    if (error) return toast('Não foi possível enviar o teste (sem internet?)');
+    toast(data && data.enviados ? `Aviso de teste enviado para ${data.enviados} aparelho${data.enviados > 1 ? 's' : ''}` : 'Nenhum aparelho com avisos ligados');
+  }
+  async function setAvisoPref(campo, valor) {
+    if (campo === 'aviso_dias') C.push.dias = valor; else C.push.valor = valor;
+    const { error } = await sb.from('preferencias').upsert({ user_id: C.user.id, [campo]: valor }, { onConflict: 'user_id' });
+    toast(error ? 'Não foi possível salvar (sem internet?)' : 'Preferência salva');
+  }
+  function avisosSection() {
+    const P = C.push;
+    let st;
+    if (!P.supported) st = isIOS() && !isStandalone() ? 'Instale o app na tela de início para receber avisos' : 'Este navegador não recebe notificações';
+    else if (P.perm === 'denied') st = 'Bloqueadas: libere em Ajustes → Notificações → Bolso';
+    else if (P.on) st = 'Todo dia às 9h: o que vence e o que está atrasado';
+    else st = 'Receba no celular um aviso antes de cada vencimento';
+    const sw = (attrs) => `<span class="switch" style="border:0;background:none;padding:0;margin:0"><input type="checkbox" ${attrs}></span>`;
+    const opts = [[0, 'No dia'], [1, '1 dia antes'], [2, '2 dias antes'], [3, '3 dias antes'], [5, '5 dias antes'], [7, '7 dias antes']];
+    return `<div class="section-title"><h2>Avisos de vencimento</h2></div><div class="glass list menu">
+      <label class="row" style="cursor:pointer"><span class="ico">${ic('bell')}</span><span class="main"><b>Notificações</b><small>${st}</small></span>${sw(`data-toggle="avisos" aria-label="Avisos de vencimento" ${P.on ? 'checked' : ''} ${P.supported && P.perm !== 'denied' ? '' : 'disabled'}`)}</label>
+      ${P.on ? `
+      <label class="row"><span class="ico">${ic('cal')}</span><span class="main"><b>Quando avisar</b><small>E no dia; atrasos lembram com 1, 3 e 7 dias</small></span><select class="mini-select" data-pref="aviso_dias" aria-label="Quando avisar">${opts.map(([v, l]) => `<option value="${v}" ${v === P.dias ? 'selected' : ''}>${l}</option>`).join('')}</select></label>
+      <label class="row" style="cursor:pointer"><span class="ico">${ic('eye')}</span><span class="main"><b>Mostrar valores no aviso</b><small>Desligue para não aparecer na tela bloqueada</small></span>${sw(`data-toggle="avisovalor" aria-label="Mostrar valores no aviso" ${P.valor ? 'checked' : ''}`)}</label>
+      <button class="row" data-act="pushTest"><span class="ico">${ic('check')}</span><span class="main"><b>Enviar aviso de teste</b><small>Chega em alguns segundos</small></span></button>` : ''}
+    </div>`;
+  }
+
   /* ---------- sessão ---------- */
   async function startUser(user, { fromLogin = false } = {}) {
     if (starting || (C.user && C.user.id === user.id && snap)) return;
@@ -403,6 +522,8 @@
       if (snap) await syncNow();
       else await firstSync();
       await ensurePerfil();
+      await refreshPush();
+      render();
     } finally {
       starting = false;
     }
@@ -429,6 +550,7 @@
       ? 'Há alterações que ainda não chegaram na nuvem (sem internet?). Se sair agora, elas se perdem.'
       : 'Seus dados continuam salvos na nuvem. Neste aparelho eles são apagados até você entrar de novo.', 'Sair', 'danger');
     if (!ok) return;
+    await disablePush(true); // este aparelho para de receber os avisos desta conta
     await sb.auth.signOut().catch(() => {});
     teardown();
   }
@@ -639,7 +761,7 @@
       <button class="row" data-act="syncNow"><span class="ico">${ic('cloud')}</span><span class="main"><b>Sincronização</b><small data-sync-text>${ST[C.status] || 'Conectado'}</small></span><span class="chev">${ic('repeat')}</span></button>
       <label class="row" style="cursor:pointer"><span class="ico">${ic('faceid')}</span><span class="main"><b>Bloquear com Face ID</b><small>${C.faceOK || face ? 'Pede Face ID ao abrir e depois de 1 min fora do app' : 'Indisponível neste aparelho ou navegador'}</small></span><span class="switch" style="border:0;background:none;padding:0;margin:0"><input type="checkbox" data-toggle="faceid" ${face ? 'checked' : ''} ${C.faceOK || face ? '' : 'disabled'} aria-label="Bloquear com Face ID"></span></label>
       <button class="row" data-act="logout"><span class="ico">${ic('logout')}</span><span class="main"><b>Sair da conta</b><small>Os dados continuam salvos na nuvem</small></span></button>
-    </div>`;
+    </div>${avisosSection()}`;
   };
 
   /* ---------- ligações com o app ---------- */
@@ -653,6 +775,7 @@
     },
     logout: () => logout(),
     editPerfil: () => perfilSheet(),
+    pushTest: () => sendTest(false),
     faceUnlock: () => faceUnlock(false),
     passUnlock: () => { const f = gateEl().querySelector('form[data-form=unlockpass]'); if (f) { f.hidden = false; f.senha.focus(); } },
     forgot: (el) => forgot(el)
@@ -666,6 +789,9 @@
   document.addEventListener('change', (e) => {
     const t = e.target;
     if (t.dataset && t.dataset.toggle === 'faceid') setFace(t);
+    if (t.dataset && t.dataset.toggle === 'avisos') setPush(t);
+    if (t.dataset && t.dataset.toggle === 'avisovalor') setAvisoPref('aviso_mostrar_valor', t.checked);
+    if (t.dataset && t.dataset.pref === 'aviso_dias') setAvisoPref('aviso_dias', +t.value);
     if (t.name === 'mode' && t.form && t.form.dataset.form === 'login') {
       const criar = t.value === 'criar';
       t.form.querySelector('button[type=submit]').textContent = criar ? 'Criar conta' : 'Entrar';

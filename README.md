@@ -42,6 +42,18 @@ Na **sua conta no Supabase** (projeto *Data-NTO*, região São Paulo, schema `fi
 
 As migrações aplicadas estão em `supabase/migrations/`.
 
+### Avisos de vencimento (notificações)
+
+- Liga em **Mais → Avisos de vencimento**. No iPhone, só funciona com o app instalado na tela de início (iOS 16.4 ou mais novo).
+- Todo dia às **9h (Brasília)** o `pg_cron` chama a Edge Function `avisos` (`supabase/functions/avisos/index.ts`). Ela manda uma notificação com:
+  - contas e faturas que vencem hoje;
+  - as que vencem daqui a N dias (preferência `aviso_dias`);
+  - as atrasadas há 1, 3 ou 7 dias;
+  - os valores a receber hoje.
+- Uma notificação por pessoa por dia (`financeiro_nick.push_envios`). Aparelhos que desinstalaram o app são removidos automaticamente.
+- Segredos no Vault do Supabase: `vapid_keys` (gerada pela própria função) e `avisos_cron_secret`.
+- Reimplantar a função: pelo MCP/CLI do Supabase, com `verify_jwt = false`. A função faz a própria autenticação: login do usuário para `testar` e senha do agendador para `enviar`.
+
 Para liberar outro e-mail (SQL Editor do Supabase):
 
 ```sql

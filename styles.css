@@ -360,6 +360,8 @@ body.gated #app, body.gated #fab, body.gated #tabbar { visibility: hidden; }
 
 .row .ico.avatar { font-family: var(--f-display); font-weight: 800; font-size: 14px; letter-spacing: .02em; background: linear-gradient(140deg, var(--garoupa), var(--garca)); border-color: rgba(255,255,255,.3); color: #fff; }
 
+.mini-select { flex: none; max-width: 46%; padding: 8px 30px 8px 12px; border-radius: 11px; border: 1px solid var(--stroke); background: rgba(8,12,28,.45) url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='8' fill='none' stroke='%23aab' stroke-width='1.8'%3E%3Cpath d='M1 1.5l5 5 5-5'/%3E%3C/svg%3E") no-repeat right 10px center; font-size: 15px; font-weight: 600; -webkit-appearance: none; appearance: none; }
+
 /* indicador de sincronização */
 .sync-btn { position: relative; }
 .sd { position: absolute; top: 6px; right: 6px; width: 10px; height: 10px; border-radius: 50%; border: 2px solid var(--ink); background: var(--faint); }
